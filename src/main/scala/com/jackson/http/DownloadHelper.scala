@@ -4,11 +4,18 @@ import java.io.{Closeable, File, FileOutputStream}
 
 import org.apache.http.client.methods.{HttpGet, HttpRequestBase}
 import org.apache.http.impl.client.HttpClientBuilder
+import org.apache.http.protocol.BasicHttpContext
 import org.apache.http.{HttpEntity, HttpStatus}
+import org.slf4j.LoggerFactory
 
 import scala.util.Properties
 
 object DownloadHelper {
+
+  val USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.110 Safari/537.36"
+  val RETRY_COUNT = 10
+
+  def logger = LoggerFactory.getLogger(this.getClass)
 
   def CallThenClose[A, T <: Closeable](a: T)(c: T => A) = {
     try {
@@ -27,18 +34,30 @@ object DownloadHelper {
     }
   }
 
-  def httpRep[T](httprb: HttpRequestBase, c: HttpEntity => T) = {
+  def httpRep[T](httprb: HttpRequestBase, c: HttpEntity => T, retry: Integer = 0) :Option[T] = {
+    //setting user agent and header
+    val HTTP_CONTEXT = new BasicHttpContext()
+    HTTP_CONTEXT.setAttribute("http.useragent", USER_AGENT)
 
     CallThenClose(HttpClientBuilder.create().build())(http => {
-      val httpResponse = http.execute(httprb)
+      val httpResponse = http.execute(httprb, HTTP_CONTEXT)
       val status = httpResponse.getStatusLine.getStatusCode
-      if (status != HttpStatus.SC_OK) {
-        throw new Exception(s"can not retrieve content from ${httprb.getURI}, status code is ${status}")
+
+      if (status == HttpStatus.SC_OK) {
+        val entity = httpResponse.getEntity
+        if (entity != null)
+          Some(c(entity))
+        else None
       }
-      val entity = httpResponse.getEntity
-      if (entity != null)
-        Some(c(entity))
-      else None
+      else {
+        if (RETRY_COUNT >= retry) {
+          val count = retry + 1
+          logger.info(s"retry download ${httprb.getURI}......(${count})")
+          httpRep(httprb, c, count)
+        } else {
+          throw new Exception(s"can not retrieve content from ${httprb.getURI}, status code is ${status}")
+        }
+      }
     })
   }
 
@@ -64,8 +83,7 @@ object DownloadHelper {
           .foreach(fos.write)
       })
       getFileName(downloadFrom)
-    }
-    )
+    })
     fileNm
   }
 
